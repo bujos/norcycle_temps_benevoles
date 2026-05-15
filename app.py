@@ -6,9 +6,27 @@ from datetime import date, datetime, timezone
 from io import BytesIO
 
 import altair as alt
+import matplotlib
+import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import (
+    Image,
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 from supabase import create_client
+
+
+matplotlib.use("Agg")
 
 
 # ------------------------------------------------------------
@@ -608,6 +626,368 @@ def render_year_season_chart(df):
 
 
 # ------------------------------------------------------------
+# Rapport PDF
+# ------------------------------------------------------------
+
+def make_matplotlib_bar_chart(df, x_col, y_col, title, x_label, y_label):
+    if df.empty:
+        return None
+
+    fig, ax = plt.subplots(figsize=(10, 5.2))
+
+    ax.bar(df[x_col].astype(str), df[y_col])
+    ax.set_title(title)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.tick_params(axis="x", rotation=35)
+    ax.grid(axis="y", alpha=0.25)
+
+    fig.tight_layout()
+
+    output = BytesIO()
+    fig.savefig(output, format="png", dpi=170, bbox_inches="tight")
+    plt.close(fig)
+
+    output.seek(0)
+    return output
+
+
+def make_matplotlib_pareto_chart(df, dimension, title):
+    pareto = make_pareto_df(df, dimension, top_n=15)
+
+    if pareto.empty:
+        return None
+
+    fig, ax1 = plt.subplots(figsize=(10, 5.2))
+
+    labels = pareto[dimension].astype(str)
+    x = range(len(labels))
+
+    ax1.bar(x, pareto["hours"])
+    ax1.set_ylabel("Heures")
+    ax1.set_xticks(list(x))
+    ax1.set_xticklabels(labels, rotation=35, ha="right")
+    ax1.grid(axis="y", alpha=0.25)
+
+    ax2 = ax1.twinx()
+    ax2.plot(x, pareto["cum_pct"] * 100, marker="o")
+    ax2.set_ylabel("Cumul %")
+    ax2.set_ylim(0, 105)
+
+    ax1.set_title(title)
+
+    fig.tight_layout()
+
+    output = BytesIO()
+    fig.savefig(output, format="png", dpi=170, bbox_inches="tight")
+    plt.close(fig)
+
+    output.seek(0)
+    return output
+
+
+def make_year_season_chart_image(df):
+    if df.empty:
+        return None
+
+    chart_df = (
+        df.groupby(["year", "season"])["hours"]
+        .sum()
+        .reset_index()
+    )
+
+    if chart_df.empty:
+        return None
+
+    pivot = (
+        chart_df.pivot_table(
+            index="year",
+            columns="season",
+            values="hours",
+            aggfunc="sum",
+            fill_value=0,
+        )
+        .reindex(columns=SEASONS, fill_value=0)
+        .sort_index()
+    )
+
+    fig, ax = plt.subplots(figsize=(10, 5.2))
+
+    pivot.plot(kind="bar", stacked=True, ax=ax)
+
+    ax.set_title("Heures par année et saison")
+    ax.set_xlabel("Année")
+    ax.set_ylabel("Heures")
+    ax.tick_params(axis="x", rotation=0)
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend(title="Saison", loc="upper left", bbox_to_anchor=(1.0, 1.0))
+
+    fig.tight_layout()
+
+    output = BytesIO()
+    fig.savefig(output, format="png", dpi=170, bbox_inches="tight")
+    plt.close(fig)
+
+    output.seek(0)
+    return output
+
+
+def make_monthly_chart_image(df):
+    if df.empty:
+        return None
+
+    monthly = df.copy()
+    monthly["month"] = monthly["work_date"].dt.to_period("M").astype(str)
+
+    monthly_summary = (
+        monthly.groupby("month")["hours"]
+        .sum()
+        .reset_index()
+        .sort_values("month")
+    )
+
+    if monthly_summary.empty:
+        return None
+
+    return make_matplotlib_bar_chart(
+        monthly_summary,
+        x_col="month",
+        y_col="hours",
+        title="Heures par mois",
+        x_label="Mois",
+        y_label="Heures",
+    )
+
+
+def add_pdf_footer(canvas, doc):
+    canvas.saveState()
+    canvas.setFont("Helvetica", 8)
+    canvas.drawRightString(
+        letter[0] - 0.6 * inch,
+        0.4 * inch,
+        f"Page {doc.page}",
+    )
+    canvas.restoreState()
+
+
+def add_image_to_story(story, image_buffer, max_width=7.2 * inch):
+    if image_buffer is None:
+        return
+
+    img = Image(image_buffer)
+
+    scale = max_width / img.drawWidth
+    img.drawWidth = img.drawWidth * scale
+    img.drawHeight = img.drawHeight * scale
+
+    story.append(img)
+    story.append(Spacer(1, 0.25 * inch))
+
+
+def make_summary_table(filtered_df):
+    if filtered_df.empty:
+        total_hours = 0
+        total_entries = 0
+        volunteer_count = 0
+        task_count = 0
+    else:
+        total_hours = filtered_df["hours"].sum()
+        total_entries = len(filtered_df)
+        volunteer_count = filtered_df["volunteer_name"].nunique()
+        task_count = filtered_df["task_name"].nunique()
+
+    data = [
+        ["Indicateur", "Valeur"],
+        ["Heures totales", f"{total_hours:.2f}"],
+        ["Nombre de saisies", str(total_entries)],
+        ["Bénévoles distincts", str(volunteer_count)],
+        ["Tâches distinctes", str(task_count)],
+    ]
+
+    table = Table(data, colWidths=[3.2 * inch, 2.0 * inch])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]
+        )
+    )
+
+    return table
+
+
+def make_top_table(df, dimension, title, limit=10):
+    if df.empty:
+        return None
+
+    summary = (
+        df.groupby(dimension)["hours"]
+        .sum()
+        .reset_index()
+        .sort_values("hours", ascending=False)
+        .head(limit)
+    )
+
+    if summary.empty:
+        return None
+
+    data = [[title, "Heures"]]
+
+    for _, row in summary.iterrows():
+        data.append([str(row[dimension]), f"{row['hours']:.2f}"])
+
+    table = Table(data, colWidths=[4.2 * inch, 1.2 * inch])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+
+    return table
+
+
+def generate_stats_pdf_report(filtered_df, selected_years, selected_seasons):
+    buffer = BytesIO()
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        rightMargin=0.55 * inch,
+        leftMargin=0.55 * inch,
+        topMargin=0.6 * inch,
+        bottomMargin=0.6 * inch,
+        title="Norcycle - Rapport des heures bénévoles",
+    )
+
+    styles = getSampleStyleSheet()
+
+    title_style = styles["Title"]
+
+    heading_style = ParagraphStyle(
+        "ReportHeading",
+        parent=styles["Heading2"],
+        fontSize=14,
+        leading=17,
+        spaceBefore=12,
+        spaceAfter=8,
+    )
+
+    normal_style = ParagraphStyle(
+        "ReportNormal",
+        parent=styles["Normal"],
+        fontSize=9,
+        leading=12,
+        spaceAfter=6,
+    )
+
+    story = []
+
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    years_text = ", ".join(str(y) for y in selected_years) if selected_years else "Toutes"
+    seasons_text = ", ".join(selected_seasons) if selected_seasons else "Toutes"
+
+    story.append(Paragraph("Norcycle - Rapport des heures bénévoles", title_style))
+    story.append(
+        Paragraph(
+            f"Rapport généré le {generated_at}",
+            normal_style,
+        )
+    )
+    story.append(
+        Paragraph(
+            f"Filtres appliqués - Années : {years_text} | Saisons : {seasons_text}",
+            normal_style,
+        )
+    )
+    story.append(Spacer(1, 0.15 * inch))
+
+    story.append(Paragraph("Résumé", heading_style))
+    story.append(make_summary_table(filtered_df))
+    story.append(Spacer(1, 0.25 * inch))
+
+    top_volunteers_table = make_top_table(
+        filtered_df,
+        dimension="volunteer_name",
+        title="Top bénévoles",
+    )
+
+    top_tasks_table = make_top_table(
+        filtered_df,
+        dimension="task_name",
+        title="Top tâches",
+    )
+
+    if top_volunteers_table or top_tasks_table:
+        story.append(Paragraph("Top 10", heading_style))
+
+        if top_volunteers_table:
+            story.append(top_volunteers_table)
+            story.append(Spacer(1, 0.18 * inch))
+
+        if top_tasks_table:
+            story.append(top_tasks_table)
+            story.append(Spacer(1, 0.18 * inch))
+
+    story.append(PageBreak())
+
+    story.append(Paragraph("Pareto des heures par bénévole", heading_style))
+    volunteer_chart = make_matplotlib_pareto_chart(
+        filtered_df,
+        dimension="volunteer_name",
+        title="Pareto des heures par bénévole",
+    )
+    add_image_to_story(story, volunteer_chart)
+
+    story.append(Paragraph("Pareto des heures par tâche", heading_style))
+    task_chart = make_matplotlib_pareto_chart(
+        filtered_df,
+        dimension="task_name",
+        title="Pareto des heures par tâche",
+    )
+    add_image_to_story(story, task_chart)
+
+    story.append(PageBreak())
+
+    story.append(Paragraph("Évolution temporelle", heading_style))
+
+    year_season_chart = make_year_season_chart_image(filtered_df)
+    add_image_to_story(story, year_season_chart)
+
+    monthly_chart = make_monthly_chart_image(filtered_df)
+    add_image_to_story(story, monthly_chart)
+
+    if filtered_df.empty:
+        story.append(
+            Paragraph(
+                "Aucune donnée disponible pour les filtres sélectionnés.",
+                normal_style,
+            )
+        )
+
+    doc.build(
+        story,
+        onFirstPage=add_pdf_footer,
+        onLaterPages=add_pdf_footer,
+    )
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# ------------------------------------------------------------
 # Excel export / import
 # ------------------------------------------------------------
 
@@ -1016,6 +1396,28 @@ def render_stats_page(entries_df):
 
     with kpi4:
         st.metric("Tâches", task_count)
+
+    st.divider()
+
+    report_pdf = generate_stats_pdf_report(
+        filtered_df=filtered,
+        selected_years=selected_years,
+        selected_seasons=selected_seasons,
+    )
+
+    st.download_button(
+        label="Exporter le rapport PDF",
+        data=report_pdf,
+        file_name="norcycle_rapport_temps_benevole.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
+
+    st.caption(
+        "Le rapport PDF utilise les filtres sélectionnés ci-dessus. "
+        "Les graphiques sont régénérés pour le PDF, parce que copier un graphique interactif dans un PDF "
+        "est un sport que personne ne mérite."
+    )
 
     st.divider()
 
@@ -1433,7 +1835,7 @@ st.markdown("# Norcycle - Temps bénévole")
 st.markdown(
     """
     <div class="subtitle">
-        Saisie des heures bénévoles · Statistiques · Pareto · Supabase
+        Saisie des heures bénévoles · Statistiques · Pareto · Rapport PDF · Supabase
     </div>
     """,
     unsafe_allow_html=True,
