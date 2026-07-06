@@ -218,6 +218,68 @@ def delete_row(table_name, row_id):
     )
 
 
+
+def run_healthcheck_if_requested():
+    """
+    Healthcheck léger pour garder Streamlit Community Cloud et Supabase actifs.
+
+    Appel recommandé :
+    https://ton-app.streamlit.app/?health=1
+
+    Ce mode :
+    - initialise le client Supabase;
+    - fait une petite requête sur les tables principales;
+    - retourne OK;
+    - arrête l'exécution avant la connexion, les statistiques et le PDF.
+    """
+
+    try:
+        health_value = st.query_params.get("health", None)
+    except Exception:
+        health_value = None
+
+    if isinstance(health_value, list):
+        health_value = health_value[0] if health_value else None
+
+    if str(health_value) != "1":
+        return
+
+    checked_at = datetime.now(timezone.utc).isoformat()
+
+    try:
+        supabase = get_supabase_client()
+
+        checks = {}
+
+        for table_name in [
+            USERS_TABLE,
+            VOLUNTEERS_TABLE,
+            TASKS_TABLE,
+            HOURS_TABLE,
+        ]:
+            response = (
+                supabase
+                .table(table_name)
+                .select("id")
+                .limit(1)
+                .execute()
+            )
+
+            checks[table_name] = len(response.data or [])
+
+        st.write("OK")
+        st.caption(f"Healthcheck réussi à {checked_at}")
+
+        for table_name, row_count in checks.items():
+            st.caption(f"{table_name} ping : {row_count}")
+
+    except Exception as exc:
+        st.error("Healthcheck échoué.")
+        st.exception(exc)
+
+    st.stop()
+
+
 # ------------------------------------------------------------
 # Sécurité comptes
 # ------------------------------------------------------------
@@ -1778,6 +1840,8 @@ def render_data_page(entries_df):
 # ------------------------------------------------------------
 # Bootstrap app
 # ------------------------------------------------------------
+
+run_healthcheck_if_requested()
 
 try:
     user_count = count_users()
