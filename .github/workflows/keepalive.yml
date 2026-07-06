@@ -1,0 +1,16 @@
+name: Keep Streamlit and Supabase alive
+
+on:
+  schedule:
+    - cron: "15 10 * * *"
+    - cron: "15 22 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ping Streamlit healthcheck
+        run: |
+          curl -L --fail --max-time 60 "${{ secrets.STREAMLIT_APP_URL }}?health=1"
