@@ -13,3 +13,4 @@ jobs:
       - name: Ping Streamlit healthcheck
         run: |
           curl --fail --max-time 90 --user-agent "Mozilla/5.0 GitHub-Actions-Keepalive" "${{ secrets.STREAMLIT_APP_URL }}/?health=1"
+ 
