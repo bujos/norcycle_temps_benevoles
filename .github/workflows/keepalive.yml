@@ -12,4 +12,4 @@ jobs:
     steps:
       - name: Ping Streamlit healthcheck
         run: |
-          curl --fail --max-time 90 --user-agent "Mozilla/5.0 GitHub-Actions-Keepalive" "https://norcycletempsbenevoles.streamlit.app/?health=1"
+          curl -L -sS --fail --max-time 90 --user-agent "Mozilla/5.0 GitHub-Actions-Keepalive" "https://norcycletempsbenevoles.streamlit.app/?health=1" | grep -q "OK"
