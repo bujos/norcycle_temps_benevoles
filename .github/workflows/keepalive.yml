@@ -2,8 +2,7 @@ name: Keep Streamlit and Supabase alive
 
 on:
   schedule:
-    - cron: "15 10 * * *"
-    - cron: "15 22 * * *"
+    - cron: "7/10 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -13,4 +12,4 @@ jobs:
     steps:
       - name: Ping Streamlit healthcheck
         run: |
-          curl --fail --max-time 90 --user-agent "Mozilla/5.0 GitHub-Actions-Keepalive" "${{ secrets.STREAMLIT_APP_URL }}/?health=1"
+          curl --fail --max-time 90 "https://norcycletempsbenevoles.streamlit.app/?health=1"
